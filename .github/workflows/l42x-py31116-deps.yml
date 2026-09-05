@@ -63,8 +63,9 @@ jobs:
           redis
           EOF
           cat > constraints/transitive-py311.txt <<'EOF'
-          # L42X lock-only compatibility selection: latest AnyIO before 4.15 lazy deprecated-alias behavior.
-          anyio==4.14.2
+          # L42X lock-only compatibility selection for FastAPI 0.115/Starlette 0.38.6 under Python 3.11.16.
+          # AnyIO 3.7.1 preserves the direct BlockingPortal export and predates destructor ResourceWarnings.
+          anyio==3.7.1
           EOF
           cat > resolve-inputs/runtime-resolve.in <<'EOF'
           -c ../constraints/transitive-py311.txt
@@ -95,7 +96,7 @@ jobs:
           pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/optional-redis-py311.lock optional-redis-resolve.in > ../evidence/optional-redis-compile.log 2>&1
           cd ..
           grep -A5 -B2 '^anyio==' locks/runtime-py311.lock | tee evidence/anyio-lock-selection.txt
-          grep -q '^anyio==4.14.2' locks/runtime-py311.lock
+          grep -q '^anyio==3.7.1' locks/runtime-py311.lock
           echo 'runtime_deterministic_recheck=PASS' | tee evidence/compile-status.txt
           sha256sum locks/*.lock | tee evidence/lock-SHA256SUMS.txt
       - name: Download exact hash-verified offline dependency bundle
@@ -109,7 +110,7 @@ jobs:
           python -m pip download --only-binary=:all: 'pip==26.2.1' 'pip-tools==7.6.1' 'setuptools==84.0.0' 'wheel==0.48.0' -d wheelhouse 2>&1 | tee evidence/tooling-download.log
           sha256sum wheelhouse/* > evidence/wheelhouse-SHA256SUMS.txt
           test -n "$(find wheelhouse -maxdepth 1 -type f \( -iname 'PGPy-0.6.0*' -o -iname 'pgpy-0.6.0*' \))"
-          test -n "$(find wheelhouse -maxdepth 1 -type f -iname 'anyio-4.14.2-*')"
+          test -n "$(find wheelhouse -maxdepth 1 -type f -iname 'anyio-3.7.1-*')"
       - name: Upload exact dependency bundle
         if: always()
         uses: actions/upload-artifact@v4
