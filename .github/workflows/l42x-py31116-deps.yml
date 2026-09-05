@@ -17,7 +17,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p inputs locks wheelhouse evidence
+          mkdir -p inputs resolve-inputs constraints locks wheelhouse evidence
           python -VV | tee evidence/python-version.txt
           python - <<'PY'
           import sys
@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade 'pip==26.2.1' 'pip-tools==7.6.1'
           python -m pip --version | tee evidence/pip-version.txt
           pip-compile --version | tee evidence/pip-tools-version.txt
-      - name: Write byte-exact recovered L42W inputs
+      - name: Write byte-exact recovered L42W inputs and transitive compatibility constraint
         shell: bash
         run: |
           set -euo pipefail
@@ -62,25 +62,43 @@ jobs:
           -r runtime.in
           redis
           EOF
-          sha256sum inputs/*.in | tee evidence/input-SHA256SUMS.txt
-      - name: Generate exact deterministic hashed locks
+          cat > constraints/transitive-py311.txt <<'EOF'
+          # L42X lock-only compatibility selection: latest AnyIO before 4.15 lazy deprecated-alias behavior.
+          anyio==4.14.2
+          EOF
+          cat > resolve-inputs/runtime-resolve.in <<'EOF'
+          -c ../constraints/transitive-py311.txt
+          -r ../inputs/runtime.in
+          EOF
+          cat > resolve-inputs/certification-resolve.in <<'EOF'
+          -c ../constraints/transitive-py311.txt
+          -r ../inputs/certification.in
+          EOF
+          cat > resolve-inputs/optional-redis-resolve.in <<'EOF'
+          -c ../constraints/transitive-py311.txt
+          -r ../inputs/optional-redis.in
+          EOF
+          sha256sum inputs/*.in constraints/*.txt resolve-inputs/*.in | tee evidence/input-SHA256SUMS.txt
+      - name: Generate deterministic hashed locks under Python 3.11.16
         shell: bash
         run: |
           set -euo pipefail
           unset PIP_NO_INDEX || true
           export PIP_INDEX_URL=https://pypi.org/simple
-          cd inputs
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime.in > ../evidence/runtime-compile.log 2>&1
+          cd resolve-inputs
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime-resolve.in > ../evidence/runtime-compile.log 2>&1
           cp ../locks/runtime-py311.lock ../locks/runtime-py311.first.lock
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime.in > ../evidence/runtime-recheck.log 2>&1
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime-resolve.in > ../evidence/runtime-recheck.log 2>&1
           cmp ../locks/runtime-py311.first.lock ../locks/runtime-py311.lock
           rm ../locks/runtime-py311.first.lock
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/certification-py311.lock certification.in > ../evidence/certification-compile.log 2>&1
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/optional-redis-py311.lock optional-redis.in > ../evidence/optional-redis-compile.log 2>&1
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/certification-py311.lock certification-resolve.in > ../evidence/certification-compile.log 2>&1
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/optional-redis-py311.lock optional-redis-resolve.in > ../evidence/optional-redis-compile.log 2>&1
           cd ..
+          grep -A5 -B2 '^anyio==' locks/runtime-py311.lock | tee evidence/anyio-lock-selection.txt
+          grep -q '^anyio==4.14.2' locks/runtime-py311.lock
           echo 'runtime_deterministic_recheck=PASS' | tee evidence/compile-status.txt
           sha256sum locks/*.lock | tee evidence/lock-SHA256SUMS.txt
-      - name: Download exact hash-verified wheelhouse including source-only packages
+      - name: Download exact hash-verified offline dependency bundle
         shell: bash
         run: |
           set -euo pipefail
@@ -90,7 +108,8 @@ jobs:
           python -m pip download --require-hashes -r locks/optional-redis-py311.lock -d wheelhouse 2>&1 | tee evidence/redis-download.log
           python -m pip download --only-binary=:all: 'pip==26.2.1' 'pip-tools==7.6.1' 'setuptools==84.0.0' 'wheel==0.48.0' -d wheelhouse 2>&1 | tee evidence/tooling-download.log
           sha256sum wheelhouse/* > evidence/wheelhouse-SHA256SUMS.txt
-          test -n "$(find wheelhouse -maxdepth 1 -type f -iname 'PGPy-0.6.0*' -o -iname 'pgpy-0.6.0*')"
+          test -n "$(find wheelhouse -maxdepth 1 -type f \( -iname 'PGPy-0.6.0*' -o -iname 'pgpy-0.6.0*' \))"
+          test -n "$(find wheelhouse -maxdepth 1 -type f -iname 'anyio-4.14.2-*')"
       - name: Upload exact dependency bundle
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +117,8 @@ jobs:
           name: l42x-py31116-dependency-bundle
           path: |
             inputs/
+            resolve-inputs/
+            constraints/
             locks/
             wheelhouse/
             evidence/
