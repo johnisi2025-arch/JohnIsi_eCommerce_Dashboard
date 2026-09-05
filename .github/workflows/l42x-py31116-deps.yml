@@ -14,8 +14,10 @@ jobs:
         with:
           python-version: '3.11.16'
       - name: Verify exact certification toolchain
+        shell: bash
         run: |
-          mkdir -p inputs locks wheelhouse evidence official-runtime
+          set -euo pipefail
+          mkdir -p inputs locks wheelhouse evidence
           python -VV | tee evidence/python-version.txt
           python - <<'PY'
           import sys
@@ -25,7 +27,9 @@ jobs:
           python -m pip --version | tee evidence/pip-version.txt
           pip-compile --version | tee evidence/pip-tools-version.txt
       - name: Write byte-exact recovered L42W inputs
+        shell: bash
         run: |
+          set -euo pipefail
           cat > inputs/runtime.in <<'EOF'
           # L42W selected-winner production runtime direct dependencies.
           fastapi==0.115.0
@@ -76,40 +80,18 @@ jobs:
           cd ..
           echo 'runtime_deterministic_recheck=PASS' | tee evidence/compile-status.txt
           sha256sum locks/*.lock | tee evidence/lock-SHA256SUMS.txt
-      - name: Download exact wheelhouse and certification tooling
-        run: |
-          unset PIP_NO_INDEX || true
-          export PIP_INDEX_URL=https://pypi.org/simple
-          python -m pip download --require-hashes --only-binary=:all: -r locks/certification-py311.lock -d wheelhouse 2>&1 | tee evidence/certification-download.log
-          python -m pip download --require-hashes --only-binary=:all: -r locks/optional-redis-py311.lock -d wheelhouse 2>&1 | tee evidence/redis-download.log
-          python -m pip download --only-binary=:all: 'pip==26.2.1' 'pip-tools==7.6.1' -d wheelhouse 2>&1 | tee evidence/tooling-download.log
-          sha256sum wheelhouse/* > evidence/wheelhouse-SHA256SUMS.txt
-      - name: Build official CPython 3.11.16 fallback from L42W pinned source
+      - name: Download exact hash-verified wheelhouse including source-only packages
         shell: bash
         run: |
           set -euo pipefail
-          PY_SHA='91bcdebfdde239a003ae93738a7fce0f9230fee5c4bc2b86f6e6e8c6f98aabe8'
-          PY_URL='https://www.python.org/ftp/python/3.11.16/Python-3.11.16.tar.xz'
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential ca-certificates curl xz-utils libssl-dev zlib1g-dev libncurses-dev libreadline-dev libsqlite3-dev libgdbm-dev libdb-dev libbz2-dev libexpat1-dev liblzma-dev tk-dev libffi-dev uuid-dev
-          mkdir -p build-python official-runtime/python
-          curl -fsSLo build-python/Python-3.11.16.tar.xz "$PY_URL"
-          echo "$PY_SHA  build-python/Python-3.11.16.tar.xz" | sha256sum -c - | tee evidence/python-source-sha256.txt
-          tar -C build-python -xf build-python/Python-3.11.16.tar.xz
-          pushd build-python/Python-3.11.16
-          ./configure --prefix="$GITHUB_WORKSPACE/official-runtime/python" --with-ensurepip=install > "$GITHUB_WORKSPACE/evidence/python-configure.log" 2>&1
-          make -j"$(nproc)" > "$GITHUB_WORKSPACE/evidence/python-make.log" 2>&1
-          make install > "$GITHUB_WORKSPACE/evidence/python-make-install.log" 2>&1
-          popd
-          official-runtime/python/bin/python3.11 -VV | tee evidence/official-python-version.txt
-          official-runtime/python/bin/python3.11 - <<'PY'
-          import sys
-          assert sys.version_info[:3] == (3,11,16), sys.version
-          PY
-          tar -C official-runtime -czf official-runtime/Python-3.11.16-official-L42W-fallback.tar.gz python
-          sha256sum official-runtime/Python-3.11.16-official-L42W-fallback.tar.gz | tee evidence/official-runtime-SHA256.txt
-          rm -rf official-runtime/python build-python
-      - name: Upload exact dependency and runtime bundle
+          unset PIP_NO_INDEX || true
+          export PIP_INDEX_URL=https://pypi.org/simple
+          python -m pip download --require-hashes -r locks/certification-py311.lock -d wheelhouse 2>&1 | tee evidence/certification-download.log
+          python -m pip download --require-hashes -r locks/optional-redis-py311.lock -d wheelhouse 2>&1 | tee evidence/redis-download.log
+          python -m pip download --only-binary=:all: 'pip==26.2.1' 'pip-tools==7.6.1' 'setuptools==84.0.0' 'wheel==0.48.0' -d wheelhouse 2>&1 | tee evidence/tooling-download.log
+          sha256sum wheelhouse/* > evidence/wheelhouse-SHA256SUMS.txt
+          test -n "$(find wheelhouse -maxdepth 1 -type f -iname 'PGPy-0.6.0*' -o -iname 'pgpy-0.6.0*')"
+      - name: Upload exact dependency bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -118,7 +100,6 @@ jobs:
             inputs/
             locks/
             wheelhouse/
-            official-runtime/
             evidence/
           compression-level: 0
           retention-days: 7
