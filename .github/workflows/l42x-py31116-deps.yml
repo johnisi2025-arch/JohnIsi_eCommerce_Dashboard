@@ -24,9 +24,10 @@ jobs:
           python -m pip install --upgrade 'pip==26.2.1' 'pip-tools==7.6.1'
           python -m pip --version | tee evidence/pip-version.txt
           pip-compile --version | tee evidence/pip-tools-version.txt
-      - name: Write exact recovered L42W inputs
+      - name: Write byte-exact recovered L42W inputs
         run: |
           cat > inputs/runtime.in <<'EOF'
+          # L42W selected-winner production runtime direct dependencies.
           fastapi==0.115.0
           uvicorn[standard]==0.30.0
           SQLAlchemy==2.0.29
@@ -35,13 +36,11 @@ jobs:
           pydantic==2.7.0
           pydantic-settings==2.2.1
           python-dotenv==1.0.1
-          python-jose[cryptography]==3.3.0
           passlib[bcrypt]==1.7.4
           email-validator==2.2.0
           python-multipart==0.0.9
           httpx==0.27.0
           PGPy==0.6.0
-          pytest==8.3.5
           reportlab==4.4.9
           PyJWT
           cachetools
@@ -51,9 +50,9 @@ jobs:
           EOF
           cat > inputs/certification.in <<'EOF'
           -r runtime.in
+          pytest==8.3.5
           prometheus-client
           python-dateutil
-          pytest==8.3.5
           EOF
           cat > inputs/optional-redis.in <<'EOF'
           -r runtime.in
