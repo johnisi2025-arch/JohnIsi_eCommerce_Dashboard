@@ -13,18 +13,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11.16'
-      - name: Verify Python
+      - name: Verify exact certification toolchain
         run: |
-          python -VV
+          mkdir -p inputs locks wheelhouse evidence
+          python -VV | tee evidence/python-version.txt
           python - <<'PY'
           import sys
           assert sys.version_info[:3] == (3, 11, 16), sys.version
           PY
-      - name: Install resolver
-        run: python -m pip install --upgrade 'pip==26.2.1' 'pip-tools==7.6.1'
-      - name: Write L42W dependency inputs
+          python -m pip install --upgrade 'pip==26.2.1' 'pip-tools==7.6.1'
+          python -m pip --version | tee evidence/pip-version.txt
+          pip-compile --version | tee evidence/pip-tools-version.txt
+      - name: Write exact recovered L42W inputs
         run: |
-          mkdir -p inputs locks wheelhouse evidence
           cat > inputs/runtime.in <<'EOF'
           fastapi==0.115.0
           uvicorn[standard]==0.30.0
@@ -34,11 +35,13 @@ jobs:
           pydantic==2.7.0
           pydantic-settings==2.2.1
           python-dotenv==1.0.1
+          python-jose[cryptography]==3.3.0
           passlib[bcrypt]==1.7.4
           email-validator==2.2.0
           python-multipart==0.0.9
           httpx==0.27.0
           PGPy==0.6.0
+          pytest==8.3.5
           reportlab==4.4.9
           PyJWT
           cachetools
@@ -48,31 +51,43 @@ jobs:
           EOF
           cat > inputs/certification.in <<'EOF'
           -r runtime.in
-          pytest==8.3.5
           prometheus-client
           python-dateutil
+          pytest==8.3.5
           EOF
           cat > inputs/optional-redis.in <<'EOF'
           -r runtime.in
           redis
           EOF
-      - name: Generate deterministic hashed locks
-        working-directory: inputs
+          sha256sum inputs/*.in | tee evidence/input-SHA256SUMS.txt
+      - name: Generate exact hashed locks with diagnostics
+        id: compile
+        shell: bash
         run: |
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime.in
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/certification-py311.lock certification.in
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/optional-redis-py311.lock optional-redis.in
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.recheck.lock runtime.in
-          cmp ../locks/runtime-py311.lock ../locks/runtime-py311.recheck.lock
-          rm ../locks/runtime-py311.recheck.lock
+          set +e
+          cd inputs
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime.in > ../evidence/runtime-compile.log 2>&1
+          r1=$?
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/certification-py311.lock certification.in > ../evidence/certification-compile.log 2>&1
+          r2=$?
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/optional-redis-py311.lock optional-redis.in > ../evidence/optional-redis-compile.log 2>&1
+          r3=$?
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.recheck.lock runtime.in > ../evidence/runtime-recheck.log 2>&1
+          r4=$?
+          cd ..
+          echo "runtime=$r1 certification=$r2 redis=$r3 recheck=$r4" | tee evidence/compile-status.txt
+          if [[ $r1 -eq 0 && $r4 -eq 0 ]]; then cmp locks/runtime-py311.lock locks/runtime-py311.recheck.lock; cmp_rc=$?; else cmp_rc=99; fi
+          echo "runtime_cmp=$cmp_rc" | tee -a evidence/compile-status.txt
+          rm -f locks/runtime-py311.recheck.lock
+          if [[ $r1 -ne 0 || $r2 -ne 0 || $r3 -ne 0 || $r4 -ne 0 || $cmp_rc -ne 0 ]]; then exit 1; fi
       - name: Download exact wheelhouse
+        if: steps.compile.outcome == 'success'
         run: |
-          python -m pip download --require-hashes --only-binary=:all: -r locks/certification-py311.lock -d wheelhouse
-          python -m pip download --require-hashes --only-binary=:all: -r locks/optional-redis-py311.lock -d wheelhouse
-          python -VV > evidence/python-version.txt
-          python -m pip --version > evidence/pip-version.txt
+          python -m pip download --require-hashes --only-binary=:all: -r locks/certification-py311.lock -d wheelhouse 2>&1 | tee evidence/certification-download.log
+          python -m pip download --require-hashes --only-binary=:all: -r locks/optional-redis-py311.lock -d wheelhouse 2>&1 | tee evidence/redis-download.log
           sha256sum locks/* wheelhouse/* > evidence/SHA256SUMS.txt
-      - name: Upload dependency artifact
+      - name: Upload resolver evidence and bundle
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: l42x-py31116-dependency-bundle
