@@ -15,7 +15,7 @@ jobs:
           python-version: '3.11.16'
       - name: Verify exact certification toolchain
         run: |
-          mkdir -p inputs locks wheelhouse evidence
+          mkdir -p inputs locks wheelhouse evidence official-runtime
           python -VV | tee evidence/python-version.txt
           python - <<'PY'
           import sys
@@ -60,33 +60,57 @@ jobs:
           redis
           EOF
           sha256sum inputs/*.in | tee evidence/input-SHA256SUMS.txt
-      - name: Generate exact hashed locks with diagnostics
-        id: compile
+      - name: Generate exact deterministic hashed locks
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
+          unset PIP_NO_INDEX || true
+          export PIP_INDEX_URL=https://pypi.org/simple
           cd inputs
           pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime.in > ../evidence/runtime-compile.log 2>&1
-          r1=$?
+          cp ../locks/runtime-py311.lock ../locks/runtime-py311.first.lock
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime.in > ../evidence/runtime-recheck.log 2>&1
+          cmp ../locks/runtime-py311.first.lock ../locks/runtime-py311.lock
+          rm ../locks/runtime-py311.first.lock
           pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/certification-py311.lock certification.in > ../evidence/certification-compile.log 2>&1
-          r2=$?
           pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/optional-redis-py311.lock optional-redis.in > ../evidence/optional-redis-compile.log 2>&1
-          r3=$?
-          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.recheck.lock runtime.in > ../evidence/runtime-recheck.log 2>&1
-          r4=$?
           cd ..
-          echo "runtime=$r1 certification=$r2 redis=$r3 recheck=$r4" | tee evidence/compile-status.txt
-          if [[ $r1 -eq 0 && $r4 -eq 0 ]]; then cmp locks/runtime-py311.lock locks/runtime-py311.recheck.lock; cmp_rc=$?; else cmp_rc=99; fi
-          echo "runtime_cmp=$cmp_rc" | tee -a evidence/compile-status.txt
-          rm -f locks/runtime-py311.recheck.lock
-          if [[ $r1 -ne 0 || $r2 -ne 0 || $r3 -ne 0 || $r4 -ne 0 || $cmp_rc -ne 0 ]]; then exit 1; fi
-      - name: Download exact wheelhouse
-        if: steps.compile.outcome == 'success'
+          echo 'runtime_deterministic_recheck=PASS' | tee evidence/compile-status.txt
+          sha256sum locks/*.lock | tee evidence/lock-SHA256SUMS.txt
+      - name: Download exact wheelhouse and certification tooling
         run: |
+          unset PIP_NO_INDEX || true
+          export PIP_INDEX_URL=https://pypi.org/simple
           python -m pip download --require-hashes --only-binary=:all: -r locks/certification-py311.lock -d wheelhouse 2>&1 | tee evidence/certification-download.log
           python -m pip download --require-hashes --only-binary=:all: -r locks/optional-redis-py311.lock -d wheelhouse 2>&1 | tee evidence/redis-download.log
-          sha256sum locks/* wheelhouse/* > evidence/SHA256SUMS.txt
-      - name: Upload resolver evidence and bundle
+          python -m pip download --only-binary=:all: 'pip==26.2.1' 'pip-tools==7.6.1' -d wheelhouse 2>&1 | tee evidence/tooling-download.log
+          sha256sum wheelhouse/* > evidence/wheelhouse-SHA256SUMS.txt
+      - name: Build official CPython 3.11.16 fallback from L42W pinned source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY_SHA='91bcdebfdde239a003ae93738a7fce0f9230fee5c4bc2b86f6e6e8c6f98aabe8'
+          PY_URL='https://www.python.org/ftp/python/3.11.16/Python-3.11.16.tar.xz'
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ca-certificates curl xz-utils libssl-dev zlib1g-dev libncurses-dev libreadline-dev libsqlite3-dev libgdbm-dev libdb-dev libbz2-dev libexpat1-dev liblzma-dev tk-dev libffi-dev uuid-dev
+          mkdir -p build-python official-runtime/python
+          curl -fsSLo build-python/Python-3.11.16.tar.xz "$PY_URL"
+          echo "$PY_SHA  build-python/Python-3.11.16.tar.xz" | sha256sum -c - | tee evidence/python-source-sha256.txt
+          tar -C build-python -xf build-python/Python-3.11.16.tar.xz
+          pushd build-python/Python-3.11.16
+          ./configure --prefix="$GITHUB_WORKSPACE/official-runtime/python" --with-ensurepip=install > "$GITHUB_WORKSPACE/evidence/python-configure.log" 2>&1
+          make -j"$(nproc)" > "$GITHUB_WORKSPACE/evidence/python-make.log" 2>&1
+          make install > "$GITHUB_WORKSPACE/evidence/python-make-install.log" 2>&1
+          popd
+          official-runtime/python/bin/python3.11 -VV | tee evidence/official-python-version.txt
+          official-runtime/python/bin/python3.11 - <<'PY'
+          import sys
+          assert sys.version_info[:3] == (3,11,16), sys.version
+          PY
+          tar -C official-runtime -czf official-runtime/Python-3.11.16-official-L42W-fallback.tar.gz python
+          sha256sum official-runtime/Python-3.11.16-official-L42W-fallback.tar.gz | tee evidence/official-runtime-SHA256.txt
+          rm -rf official-runtime/python build-python
+      - name: Upload exact dependency and runtime bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -95,6 +119,7 @@ jobs:
             inputs/
             locks/
             wheelhouse/
+            official-runtime/
             evidence/
           compression-level: 0
           retention-days: 7
