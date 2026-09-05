@@ -1,0 +1,85 @@
+name: L42X Py31116 Dependency Resolve
+
+on:
+  push:
+    branches:
+      - l42x-py31116-cert-temp-20260905
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.16'
+      - name: Verify Python
+        run: |
+          python -VV
+          python - <<'PY'
+          import sys
+          assert sys.version_info[:3] == (3, 11, 16), sys.version
+          PY
+      - name: Install resolver
+        run: python -m pip install --upgrade 'pip==26.2.1' 'pip-tools==7.6.1'
+      - name: Write L42W dependency inputs
+        run: |
+          mkdir -p inputs locks wheelhouse evidence
+          cat > inputs/runtime.in <<'EOF'
+          fastapi==0.115.0
+          uvicorn[standard]==0.30.0
+          SQLAlchemy==2.0.29
+          alembic==1.13.1
+          psycopg2-binary==2.9.9
+          pydantic==2.7.0
+          pydantic-settings==2.2.1
+          python-dotenv==1.0.1
+          passlib[bcrypt]==1.7.4
+          email-validator==2.2.0
+          python-multipart==0.0.9
+          httpx==0.27.0
+          PGPy==0.6.0
+          reportlab==4.4.9
+          PyJWT
+          cachetools
+          boto3
+          requests
+          cryptography
+          EOF
+          cat > inputs/certification.in <<'EOF'
+          -r runtime.in
+          pytest==8.3.5
+          prometheus-client
+          python-dateutil
+          EOF
+          cat > inputs/optional-redis.in <<'EOF'
+          -r runtime.in
+          redis
+          EOF
+      - name: Generate deterministic hashed locks
+        working-directory: inputs
+        run: |
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.lock runtime.in
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/certification-py311.lock certification.in
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/optional-redis-py311.lock optional-redis.in
+          pip-compile --resolver=backtracking --generate-hashes --no-emit-index-url --no-emit-trusted-host --output-file ../locks/runtime-py311.recheck.lock runtime.in
+          cmp ../locks/runtime-py311.lock ../locks/runtime-py311.recheck.lock
+          rm ../locks/runtime-py311.recheck.lock
+      - name: Download exact wheelhouse
+        run: |
+          python -m pip download --require-hashes --only-binary=:all: -r locks/certification-py311.lock -d wheelhouse
+          python -m pip download --require-hashes --only-binary=:all: -r locks/optional-redis-py311.lock -d wheelhouse
+          python -VV > evidence/python-version.txt
+          python -m pip --version > evidence/pip-version.txt
+          sha256sum locks/* wheelhouse/* > evidence/SHA256SUMS.txt
+      - name: Upload dependency artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: l42x-py31116-dependency-bundle
+          path: |
+            inputs/
+            locks/
+            wheelhouse/
+            evidence/
+          compression-level: 0
+          retention-days: 7
