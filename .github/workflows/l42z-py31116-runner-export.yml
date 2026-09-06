@@ -1,0 +1,37 @@
+name: L42Z Py31116 Runner Export
+
+on:
+  push:
+    branches:
+      - l42x-py31116-cert-temp-20260905
+
+jobs:
+  export-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.16'
+      - name: Verify exact Python and package runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -VV
+          python - <<'PY'
+          import os, sys
+          assert sys.version_info[:3] == (3, 11, 16), sys.version
+          print(sys.prefix)
+          print(os.environ.get('pythonLocation',''))
+          PY
+          test -n "${pythonLocation:-}"
+          tar -C "$pythonLocation" -czf py31116-runner-linux-x64.tgz .
+          sha256sum py31116-runner-linux-x64.tgz > py31116-runner-linux-x64.tgz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: l42z-py31116-runner-linux-x64
+          path: |
+            py31116-runner-linux-x64.tgz
+            py31116-runner-linux-x64.tgz.sha256
+          compression-level: 0
+          retention-days: 7
